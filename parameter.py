@@ -18,10 +18,8 @@ def parse_args():
     parser.add_argument('--becausedby_ratio', default=1, type=int, help='be caused by ratio')
 
     # Model
-    # parser.add_argument('--model_name', default='/home/gp3_zhanch/pkg/RoBERTa/RoBERTaForMaskedLM/roberta-base', type=str, help='Model used to be encoder')
-    parser.add_argument('--model_name', default='/home/wzl/prompt-learning/PLMs/RoBERTa/RoBERTaForMaskedLM/roberta-base', type=str, help='Model used to be encoder')
-    # parser.add_argument('--model_name', default='/home/bbx/NLP/PLM/RoBERTaForMaskedLM/roberta-base', type=str,help='Model used to be encoder')
-    # parser.add_argument('--model_name', default='E:/Desktop/yan1/PLM/RoBERTaForMaskedLM/roberta-base', type=str, help='Model used to be encoder')
+    parser.add_argument('--model_name', default='./pretrained/roberta-base', type=str, help='Model used to be encoder')
+
     parser.add_argument('--vocab_size', default=50265, type=int, help='Size of RoBERTa vocab')
 
     # Prompt and Contrastive Training
