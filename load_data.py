@@ -3,8 +3,8 @@
 
 import numpy as np
 
-def load_data(args):
-    data_document = np.load('train.npy', allow_pickle=True).item()
+def load_data(path):
+    data_document = np.load(path, allow_pickle=True).item()
     valid_data = data_document['dev_data']
     train_data = data_document['train_data']
     test_data = data_document['test_data']

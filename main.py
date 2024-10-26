@@ -70,7 +70,7 @@ tokenizer = RobertaTokenizer.from_pretrained(args.model_name)
 
 # -------------------------------- 加载数据 --------------------------------
 printlog('Loading data')
-train_data, dev_data, test_data = load_data(args)
+train_data, dev_data, test_data = load_data(args.train_data_path)
 train_size = len(train_data)
 dev_size = len(dev_data)
 test_size = len(test_data)

@@ -11,6 +11,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='ECI')
 
     # Dataset
+    parser.add_argument('--train_data_path', default='dataset/train.npy', type=str, help="Path to training set")
     parser.add_argument('--fold', default=1, type=int, help='Fold number used to be test set')
     parser.add_argument('--len_arg', default=150, type=int, help='Sentence length')
     parser.add_argument('--len_temp', default=0, type=int, help='Template length')
