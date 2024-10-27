@@ -17,6 +17,7 @@ def parse_args():
     parser.add_argument('--len_temp', default=0, type=int, help='Template length')
     parser.add_argument('--cause_ratio', default=1, type=int, help='cause ratio')
     parser.add_argument('--becausedby_ratio', default=1, type=int, help='be caused by ratio')
+    parser.add_argument('--Sim_ratio', default=0.5, type=float, help='Ratio of similarity in loss function')
 
     # Model
     parser.add_argument('--model_name', default='./pretrained/roberta-base', type=str, help='Model used to be encoder')

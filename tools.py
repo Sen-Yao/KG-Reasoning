@@ -167,30 +167,32 @@ def get_batch_SeDGPL(data, args, indices, tokenizer, with_label=True):
         sentence = getSentence(args, tokenizer, data[idx], relation)
 
         arg_idx, arg_mask = tokenizerHandler(args, template, tokenizer)
-        arg_Type_idx, arg_Type_mask = tokenizerHandler(args, templateType, tokenizer)
+        # arg_Type_idx, arg_Type_mask = tokenizerHandler(args, templateType, tokenizer)
 
-        assert arg_mask.tolist() == arg_Type_mask.tolist()
+        # assert arg_mask.tolist() == arg_Type_mask.tolist()
         assert relation[-1] == data[idx]['edge'][-1]
-        assert candi[data[idx]['label']] == tokenizer.encode(data[idx]['node'][relation[-1][-1]][5])[1]
+        
         if with_label:
-            label = tokenizer.encode(data[idx]['node'][relation[-1][-1]][5])[1]
+            # assert candi[data[idx]['label']] == tokenizer.encode(data[idx]['node'][relation[-1][-1]][5])[1]
+            # label = tokenizer.encode(data[idx]['node'][relation[-1][-1]][5])[1]
+            label = candi[data[idx]['label']]
             labels.append(label)
         # template分词后所有事件的位置
         ePosition, ePositionKey = getposHandler(data[idx], arg_idx, relation, sentence, tokenizer)
-        eTypePosition, eTypePositionKey = getposHandler(data[idx], arg_Type_idx, relation, sentence, tokenizer)
-        assert ePosition == eTypePosition
+        # eTypePosition, eTypePositionKey = getposHandler(data[idx], arg_Type_idx, relation, sentence, tokenizer)
+        # assert ePosition == eTypePosition
         event_tokenizer_pos.append(ePosition)
         event_key_pos.append(ePositionKey)
         sentences.append(sentence)
         candiSet.append(candi)
         if len(batch_idx) == 0:
             batch_idx, batch_mask = arg_idx, arg_mask
-            batch_Type_idx, batch_Type_mask = arg_Type_idx, arg_Type_mask
+            # batch_Type_idx, batch_Type_mask = arg_Type_idx, arg_Type_mask
             mask_indices = torch.nonzero(arg_idx == 50264, as_tuple=False)[0][1]
             mask_indices = torch.unsqueeze(mask_indices, 0)
         else:
             batch_idx, batch_mask = torch.cat((batch_idx, arg_idx), dim=0), torch.cat((batch_mask, arg_mask), dim=0)
-            batch_Type_idx, batch_Type_mask = torch.cat((batch_Type_idx, arg_Type_idx), dim=0), torch.cat((batch_Type_mask, arg_Type_mask), dim=0)
+            # batch_Type_idx, batch_Type_mask = torch.cat((batch_Type_idx, arg_Type_idx), dim=0), torch.cat((batch_Type_mask, arg_Type_mask), dim=0)
             mask_indices = torch.cat((mask_indices, torch.unsqueeze(torch.nonzero(arg_idx == 50264, as_tuple=False)[0][1], 0)), dim=0)
     if with_label:
         return batch_idx, batch_mask, batch_Type_idx, batch_Type_mask, event_tokenizer_pos, event_key_pos, mask_indices, sentences, labels, candiSet

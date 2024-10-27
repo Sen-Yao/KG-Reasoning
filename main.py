@@ -397,7 +397,7 @@ def SeDGPL_main(args):
             for tt in range(len(labels)):
                 candiLabels[tt] = candiSet[tt].index(labels[tt])
             batch_arg, mask_arg = batch_arg.to(device), mask_arg.to(device)
-            batch_Type_arg, mask_Type_arg = batch_Type_arg.to(device), mask_Type_arg.to(device)
+            # batch_Type_arg, mask_Type_arg = batch_Type_arg.to(device), mask_Type_arg.to(device)
             mask_indices = mask_indices.to(device)
             for sent in sentences:
                 for k in sent.keys():
@@ -416,7 +416,7 @@ def SeDGPL_main(args):
             optimizer.step()
             step += 1
             loss_epoch += loss.item()
-            _, hit1, hit3, hit10, hit20, hit50 = calculate(prediction, candiSet, labels, length)
+            hit1, hit3, hit10, hit50 = calculate(prediction, candiSet, labels, length)
             Hit1 += hit1
             Hit3 += hit3
             Hit10 += hit10
@@ -461,7 +461,7 @@ def SeDGPL_main(args):
             for tt in range(len(labels)):
                 candiLabels[tt] = candiSet[tt].index(labels[tt])
             batch_arg, mask_arg = batch_arg.to(device), mask_arg.to(device)
-            batch_Type_arg, mask_Type_arg = batch_Type_arg.to(device), mask_Type_arg.to(device)
+            # batch_Type_arg, mask_Type_arg = batch_Type_arg.to(device), mask_Type_arg.to(device)
             mask_indices = mask_indices.to(device)
             for sent in sentences:
                 for k in sent.keys():
@@ -471,7 +471,7 @@ def SeDGPL_main(args):
             # fed data into network
             prediction = net(mode, batch_arg, mask_arg, batch_Type_arg, mask_Type_arg, event_tokenizer_pos, event_key_pos, mask_indices, sentences, candiSet, candiLabels, length)
 
-            _, hit1, hit3, hit10, hit20, hit50 = calculate(prediction, candiSet, labels, length)
+            hit1, hit3, hit10, hit50 = calculate(prediction, candiSet, labels, length)
             Hit1_d += hit1
             Hit3_d += hit3
             Hit10_d += hit10
@@ -503,13 +503,11 @@ def SeDGPL_main(args):
             progress.update(1)
 
             # get a batch of dev_data
-            batch_arg, mask_arg, batch_Type_arg, mask_Type_arg, event_tokenizer_pos, event_key_pos, mask_indices, sentences, candiSet = get_batch_SeDGPL(dev_data, args, batch_indices, tokenizer, with_label=False)
+            batch_arg, mask_arg, batch_Type_arg, mask_Type_arg, event_tokenizer_pos, event_key_pos, mask_indices, sentences, candiSet = get_batch_SeDGPL(test_data, args, batch_indices, tokenizer, with_label=False)
 
-            candiLabels = [] + labels
-            for tt in range(len(labels)):
-                candiLabels[tt] = candiSet[tt].index(labels[tt])
+            candiLabels = None
             batch_arg, mask_arg = batch_arg.to(device), mask_arg.to(device)
-            batch_Type_arg, mask_Type_arg = batch_Type_arg.to(device), mask_Type_arg.to(device)
+            # batch_Type_arg, mask_Type_arg = batch_Type_arg.to(device), mask_Type_arg.to(device)
             mask_indices = mask_indices.to(device)
             for sent in sentences:
                 for k in sent.keys():
@@ -517,7 +515,7 @@ def SeDGPL_main(args):
                     sent[k]['attention_mask'] = sent[k]['attention_mask'].to(device)
             length = len(batch_indices)
             # fed data into network
-            prediction = net(mode, batch_arg, mask_arg, batch_Type_arg, mask_Type_arg, event_tokenizer_pos, event_key_pos, mask_indices, sentences, candiSet, candiLabels, length)
+            prediction = net(mode, batch_arg, mask_arg, batch_Type_arg, mask_Type_arg, event_tokenizer_pos, event_key_pos, mask_indices, sentences, candiSet, candiLabels, length, calculate_loss=False)
             
             # 保存每条数据的预测结果
             # 对于当前 batch_indices 内的第 idx 条样本
@@ -590,4 +588,4 @@ def SeDGPL_main(args):
         printlog('Eval hit50: {}'.format(best_hit50))
 
 
-MLP_main(args)
+SeDGPL_main(args)
