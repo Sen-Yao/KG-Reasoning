@@ -18,7 +18,7 @@ def getTemplate(args, data):
     return template + data['node'][maskRel[0]][5] + ' ' + maskRel[1] + ' <mask> .', relation + [maskRel]
 
 # tokenize sentence and get event idx
-def get_batch(data, args, indices, tokenizer):
+def get_batch(data, args, indices, tokenizer, with_labels=True):
     batch_idx = []
     batch_mask = []
     mask_indices = []   # mask所在位置
@@ -40,8 +40,9 @@ def get_batch(data, args, indices, tokenizer):
         )
         arg_1_idx = encode_dict['input_ids']
         arg_1_mask = encode_dict['attention_mask']
-        label = tokenizer.encode(data[idx]['candiSet'][data[idx]['label']])[1]
-        labels.append(label)
+        if with_labels:
+            label = tokenizer.encode(data[idx]['candiSet'][data[idx]['label']])[1]
+            labels.append(label)
         candiSet.append(candi)
 
         if len(batch_idx) == 0:
@@ -53,17 +54,31 @@ def get_batch(data, args, indices, tokenizer):
             batch_idx = torch.cat((batch_idx, arg_1_idx), dim=0)
             batch_mask = torch.cat((batch_mask, arg_1_mask), dim=0)
             mask_indices = torch.cat((mask_indices, torch.unsqueeze(torch.nonzero(arg_1_idx == 50264, as_tuple=False)[0][1], 0)), dim=0)
-    return batch_idx, batch_mask, mask_indices, labels, candiSet
+    if with_labels:
+        return batch_idx, batch_mask, mask_indices, labels, candiSet
+    else:
+        return batch_idx, batch_mask, mask_indices, candiSet
+
 
 
 # calculate Hit@1 Hit@3 Hit@10
 def calculate(prediction, candiSet, labels, batch_size):
+    '''
+    prediction: 一个 batch 的每个样本的预测结果，二维张量
+    candiSet: 一个 batch 的每个样本候选集下标指示，二维张量
+    labels: 一个 batch 的每个样本的 GT，二维张量
+    '''
     hit1, hit3, hit10, hit50 = [], [], [], []
     for i in range(batch_size):
+        # predtCandi 是一个一维数组，表示对当前样本来说，所有的此样本候选事件的发生概率
         predtCandi = prediction[i][candiSet[i]].tolist()
+        # 根据 gt，在候选集中的第 label 个事件是真实发生的
         label = candiSet[i].index(labels[i])
+        # 模型认为 gt 发生的概率
         labelScore = predtCandi[label]
+        # 对分数从高到低排序
         predtCandi.sort(reverse=True)
+        # 模型认为 gt 的排名
         rank = predtCandi.index(labelScore)
         hit1.append(int(rank<1))
         hit3.append(int(rank<3))

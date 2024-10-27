@@ -13,6 +13,7 @@ import torch
 import torch.nn as nn
 import logging
 import tqdm
+import json
 from datetime import datetime
 from load_data import load_data
 from transformers import RobertaTokenizer, AdamW
@@ -74,7 +75,7 @@ train_data, dev_data, test_data = load_data(args.train_data_path)
 train_size = len(train_data)
 dev_size = len(dev_data)
 test_size = len(test_data)
-print('Data loaded')
+print("train_size =", train_size, ", dev_size =", dev_size, "test_size =", test_size, 'Data loaded')
 # -------------------------------- 一些对数据集进行处理的步骤 （此步骤大家可忽略） --------------------------------
 # --------------------------------
 # 因为数据集中有这种情况的多token事件：put Tompsion on，但事件标注只有put on（在句子中的位置为：_14_16）
@@ -148,7 +149,7 @@ for epoch in range(args.num_epoch):
     ############################################################################
     ##################################  train  #################################
     ############################################################################
-    net.eval()
+    net.train()
     progress = tqdm.tqdm(total=len(train_data) // args.batch_size + 1, ncols=75,
                          desc='Train {}'.format(epoch))
     total_step = len(train_data) // args.batch_size + 1
@@ -240,7 +241,9 @@ for epoch in range(args.num_epoch):
     # ----保存的内容为每条数据候选集事件的预测排名，保存形式见data.json----
     # ------------------------------------------------------
     all_indices = torch.arange(1, test_size).split(args.batch_size)
-    Hit1_t, Hit3_t, Hit10_t, Hit50_t = [], [], [], []
+
+    # 用于保存每个 epoch 的测试集预测结果
+    all_dict = {}
 
     progress = tqdm.tqdm(total=len(test_data) // args.batch_size + 1, ncols=75,
                          desc='Eval {}'.format(epoch))
@@ -250,7 +253,7 @@ for epoch in range(args.num_epoch):
         progress.update(1)
 
         # get a batch of dev_data
-        batch_arg, mask_arg, mask_indices, labels, candiSet = get_batch(test_data, args, batch_indices, tokenizer)
+        batch_arg, mask_arg, mask_indices, candiSet = get_batch(test_data, args, batch_indices, tokenizer, with_labels=False)
 
         batch_arg = batch_arg.to(device)
         mask_arg = mask_arg.to(device)
@@ -259,13 +262,27 @@ for epoch in range(args.num_epoch):
         # fed data into network
         prediction = net(batch_arg, mask_arg, mask_indices, length)
 
-        hit1, hit3, hit10, hit50 = calculate(prediction, candiSet, labels, length)
-        Hit1_t += hit1
-        Hit3_t += hit3
-        Hit10_t += hit10
-        Hit50_t += hit50
+        # TO DO: 这里需要搞清楚数据结构，明天把这里改掉
+        # 保存每条数据的预测结果
+        # 对于当前 batch_indices 内的第 idx 条样本
+        for idx in range(length):
+            # 表示对当前样本来说，所有的此样本候选事件的发生概率
+            predtCandi = prediction[idx][candiSet[idx]].tolist()
+            # 获取每个候选事件的排名
+            ranked_indices = torch.argsort(torch.tensor(predtCandi), descending=True).tolist()
+            
+            # 创建字典，键为 candiSet[idx] 的元素，值为对应的排名
+            ranking_dict = {candiSet[idx][i]: ranked_indices.index(i) + 1 for i in range(len(candiSet[idx]))}
+
+        # 将 ranking_dict 添加到 all_dict 中，使用 batch_indices[idx] 作为键
+        all_dict[batch_indices.item()] = ranking_dict
 
     progress.close()
+
+    # 保存每个 epoch 的测试集预测结果到 data.json
+    with open('output/data.json', 'w') as f:
+        json.dump(all_dict, f)
+        print("Test predictions saved to data.json")
 
     ############################################################################
     ##################################  result  ##################################
@@ -291,36 +308,20 @@ for epoch in range(args.num_epoch):
         sum(Hit10_d) / len(Hit10_d),
         sum(Hit50_d) / len(Hit50_d)))
 
-    ######### Test Results Print #########
-    printlog("TEST:")
-    printlog('loss={:.4f} hit1={:.4f}, hit3={:.4f}, hit10={:.4f}, hit50={:.4f}'.format(
-        loss_epoch / (30 // args.batch_size),
-        sum(Hit1_t) / len(Hit1_t),
-        sum(Hit3_t) / len(Hit3_t),
-        sum(Hit10_t) / len(Hit10_t),
-        sum(Hit50_t) / len(Hit50_t)))
 
     # record the best result
     if sum(Hit1_d) / len(Hit1_d) > dev_best_hit1:
         dev_best_hit1 = sum(Hit1_d) / len(Hit1_d)
-        best_hit1 = sum(Hit1_t) / len(Hit1_t)
         best_hit1_epoch = epoch
-        np.save('predt_hit1.npy', Hit1_t)
     if sum(Hit3_d) / len(Hit3_d) > dev_best_hit3:
         dev_best_hit3 = sum(Hit3_d) / len(Hit3_d)
-        best_hit3 = sum(Hit3_t) / len(Hit3_t)
         best_hit3_epoch = epoch
-        np.save('predt_hit3.npy', Hit3_t)
     if sum(Hit10_d) / len(Hit10_d) > dev_best_hit10:
         dev_best_hit10 = sum(Hit10_d) / len(Hit10_d)
-        best_hit10 = sum(Hit10_t) / len(Hit10_t)
         best_hit10_epoch = epoch
-        np.save('predt_hit10.npy', Hit10_t)
     if sum(Hit50_d) / len(Hit50_d) > dev_best_hit50:
         dev_best_hit50 = sum(Hit50_d) / len(Hit50_d)
-        best_hit50 = sum(Hit50_t) / len(Hit50_t)
         best_hit50_epoch = epoch
-        np.save('predt_hit50.npy', Hit50_t)
 
     printlog('=' * 20)
     printlog('Best result at hit1 epoch: {}'.format(best_hit1_epoch))
