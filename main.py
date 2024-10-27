@@ -96,267 +96,498 @@ dev_data = replace_mult_event(dev_data,reverse_event_dict)
 test_data = replace_mult_event(test_data,reverse_event_dict)
 
 
+def MLP_main(args):
+    # ---------- network ----------
+    net = MLP(args).to(device)
+    net.handler(to_add, tokenizer)
+    no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
+    optimizer_grouped_parameters = [
+        {'params': [p for n, p in net.named_parameters() if not any(nd in n for nd in no_decay)], 'weight_decay': args.wd},
+        {'params': [p for n, p in net.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
+    ]
+    optimizer = AdamW(params=optimizer_grouped_parameters, lr=args.t_lr)
+    # 采用交叉熵损失
+    cross_entropy = nn.CrossEntropyLoss().to(device)
+
+    # 记录验证集最好时，测试集的效果，以及相应的epoch
+    best_hit1, best_hit3, best_hit10, best_hit50 = 0,0,0,0
+    dev_best_hit1, dev_best_hit3, dev_best_hit10, dev_best_hit50 = 0,0,0,0
+    best_hit1_epoch, best_hit3_epoch, best_hit10_epoch, best_hit50_epoch= 0,0,0,0
+    best_epoch = 0
+
+    # 打印一些参数信息
+    printlog('fold: {}'.format(args.fold))
+    printlog('batch_size:{}'.format(args.batch_size))
+    printlog('epoch_num: {}'.format(args.num_epoch))
+    printlog('initial_t_lr: {}'.format(args.t_lr))
+    printlog('seed: {}'.format(args.seed))
+    printlog('wd: {}'.format(args.wd))
+    printlog('len_arg: {}'.format(args.len_arg))
+    printlog('len_temp: {}'.format(args.len_temp))
+    printlog('Start training ...')
+    ##################################  epoch  #################################
+    for epoch in range(args.num_epoch):
+        print('=' * 20)
+        printlog('Epoch: {}'.format(epoch))
+        torch.cuda.empty_cache()
+        all_indices = torch.randperm(train_size).split(args.batch_size)
+        loss_epoch = 0.0
+
+        Hit1, Hit3, Hit10, Hit50 = [], [], [], []
+
+        all_Hit1, all_Hit3, all_Hit10, all_Hit50 = [], [], [], []
+
+        start = time.time()
+
+        printlog('lr:{}'.format(optimizer.state_dict()['param_groups'][0]['lr']))
+        printlog('t_lr:{}'.format(optimizer.state_dict()['param_groups'][1]['lr']))
+
+        ############################################################################
+        ##################################  train  #################################
+        ############################################################################
+        net.train()
+        progress = tqdm.tqdm(total=len(train_data) // args.batch_size + 1, ncols=75,
+                            desc='Train {}'.format(epoch))
+        total_step = len(train_data) // args.batch_size + 1
+        step = 0
+        for ii, batch_indices in enumerate(all_indices, 1):
+            progress.update(1)
+            # get a batch of wordvecs
+            batch_arg, mask_arg, mask_indices, labels, candiSet = get_batch(train_data, args, batch_indices, tokenizer)
+            batch_arg = batch_arg.to(device)
+            mask_arg = mask_arg.to(device)
+            mask_indices = mask_indices.to(device)
+            length = len(batch_indices)
+            # fed data into network
+            prediction = net(batch_arg, mask_arg, mask_indices, length)
+            # answer_space：[23702,50265]
+            label = torch.LongTensor(labels).to(device)
+            # loss
+            loss = cross_entropy(prediction,label)
+            # optimize
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            step += 1
+            loss_epoch += loss.item()
+            hit1, hit3, hit10, hit50 = calculate(prediction, candiSet, labels, length)
+            Hit1 += hit1
+            Hit3 += hit3
+            Hit10 += hit10
+            Hit50 += hit50
+
+            all_Hit1 += hit1
+            all_Hit3 += hit3
+            all_Hit10 += hit10
+            all_Hit50 += hit50
+            if ii % (100 // args.batch_size) == 0:
+                printlog('loss={:.4f} hit1={:.4f}, hit3={:.4f}, hit10={:.4f}, hit50={:.4f}'.format(
+                    loss_epoch / (30 // args.batch_size),
+                    sum(Hit1) / len(Hit1),
+                    sum(Hit3) / len(Hit3),
+                    sum(Hit10) / len(Hit10),
+                    sum(Hit50) / len(Hit50)))
+                loss_epoch = 0.0
+                Hit1, Hit3, Hit10, Hit50 = [], [], [], []
+        end = time.time()
+        print('Training Time: {:.2f}s'.format(end - start))
+
+        progress.close()
+
+        ############################################################################
+        ##################################  dev  ###################################
+        ############################################################################
+        all_indices = torch.randperm(dev_size).split(args.batch_size)
+        Hit1_d, Hit3_d, Hit10_d, Hit50_d = [], [], [], []
+
+        progress = tqdm.tqdm(total=len(dev_data) // args.batch_size + 1, ncols=75,
+                            desc='Eval {}'.format(epoch))
+
+        net.eval()
+        for batch_indices in all_indices:
+            progress.update(1)
+
+            # get a batch of dev_data
+            batch_arg, mask_arg, mask_indices, labels, candiSet = get_batch(dev_data, args, batch_indices, tokenizer)
+
+            batch_arg = batch_arg.to(device)
+            mask_arg = mask_arg.to(device)
+            mask_indices = mask_indices.to(device)
+            length = len(batch_indices)
+            # fed data into network
+            prediction = net(batch_arg, mask_arg, mask_indices, length)
+
+            hit1, hit3, hit10, hit50 = calculate(prediction, candiSet, labels, length)
+            Hit1_d += hit1
+            Hit3_d += hit3
+            Hit10_d += hit10
+            Hit50_d += hit50
+
+        progress.close()
+
+        ############################################################################
+        ##################################  test  ##################################
+        ############################################################################
+        # ------------------------------------------------------
+        # -------------- 这里不要随机！！！！！！！！！ --------------
+        # -----由于测试集的label没有给出，因此运行到253行时会报错-------
+        # ---你们需要在验证集最优时，保存好该epoch的测试集的预测结果-----
+        # ----因此这一部分的代码需要做调整：保存每个epoch的测试集的预测结果-----
+        # ----然后将验证集最优的那个epoch，测试集的预测结果文件提交即可-----
+        # ----保存的内容为每条数据候选集事件的预测排名，保存形式见data.json----
+        # ------------------------------------------------------
+        all_indices = torch.arange(1, test_size).split(args.batch_size)
+
+        # 用于保存每个 epoch 的测试集预测结果
+        all_dict = {}
+
+        progress = tqdm.tqdm(total=len(test_data) // args.batch_size + 1, ncols=75,
+                            desc='Eval {}'.format(epoch))
+
+        net.eval()
+        for batch_indices in all_indices:
+            progress.update(1)
+
+            # get a batch of dev_data
+            batch_arg, mask_arg, mask_indices, candiSet = get_batch(test_data, args, batch_indices, tokenizer, with_labels=False)
+
+            batch_arg = batch_arg.to(device)
+            mask_arg = mask_arg.to(device)
+            mask_indices = mask_indices.to(device)
+            length = len(batch_indices)
+            # fed data into network
+            prediction = net(batch_arg, mask_arg, mask_indices, length)
+
+            # TO DO: 这里需要搞清楚数据结构，明天把这里改掉
+            # 保存每条数据的预测结果
+            # 对于当前 batch_indices 内的第 idx 条样本
+            for idx in range(length):
+                # 表示对当前样本来说，所有的此样本候选事件的发生概率
+                predtCandi = prediction[idx][candiSet[idx]].tolist()
+                # 获取每个候选事件的排名
+                ranked_indices = torch.argsort(torch.tensor(predtCandi), descending=True).tolist()
+                
+                # 创建字典，键为 candiSet[idx] 的元素，值为对应的排名
+                ranking_dict = {candiSet[idx][i]: ranked_indices.index(i) + 1 for i in range(len(candiSet[idx]))}
+
+            # 将 ranking_dict 添加到 all_dict 中，使用 batch_indices[idx] 作为键
+            all_dict[batch_indices.item()] = ranking_dict
+
+        progress.close()
+
+        # 保存每个 epoch 的测试集预测结果到 data.json
+        with open('output/data.json', 'w') as f:
+            json.dump(all_dict, f)
+            print("Test predictions saved to data.json")
+
+        ############################################################################
+        ##################################  result  ##################################
+        ############################################################################
+        ######### Train Results Print #########
+        printlog('-------------------')
+        printlog("TIME: {}".format(time.time() - start))
+        printlog('EPOCH : {}'.format(epoch))
+        printlog("TRAIN:")
+        printlog('loss={:.4f} hit1={:.4f}, hit3={:.4f}, hit10={:.4f}, hit50={:.4f}'.format(
+            loss_epoch / (30 // args.batch_size),
+            sum(all_Hit1) / len(all_Hit1),
+            sum(all_Hit3) / len(all_Hit3),
+            sum(all_Hit10) / len(all_Hit10),
+            sum(all_Hit50) / len(all_Hit50)))
+
+        ######### Dev Results Print #########
+        printlog("DEV:")
+        printlog('loss={:.4f} hit1={:.4f}, hit3={:.4f}, hit10={:.4f}, hit50={:.4f}'.format(
+            loss_epoch / (30 // args.batch_size),
+            sum(Hit1_d) / len(Hit1_d),
+            sum(Hit3_d) / len(Hit3_d),
+            sum(Hit10_d) / len(Hit10_d),
+            sum(Hit50_d) / len(Hit50_d)))
 
 
-# ---------- network ----------
-net = SeDGPL(args).to(device)
-net.handler(to_add, tokenizer)
-no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
-optimizer_grouped_parameters = [
-    {'params': [p for n, p in net.named_parameters() if not any(nd in n for nd in no_decay)], 'weight_decay': args.wd},
-    {'params': [p for n, p in net.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
-]
-optimizer = AdamW(params=optimizer_grouped_parameters, lr=args.t_lr)
-# 采用交叉熵损失
-cross_entropy = nn.CrossEntropyLoss().to(device)
+        # record the best result
+        if sum(Hit1_d) / len(Hit1_d) > dev_best_hit1:
+            dev_best_hit1 = sum(Hit1_d) / len(Hit1_d)
+            best_hit1_epoch = epoch
+        if sum(Hit3_d) / len(Hit3_d) > dev_best_hit3:
+            dev_best_hit3 = sum(Hit3_d) / len(Hit3_d)
+            best_hit3_epoch = epoch
+        if sum(Hit10_d) / len(Hit10_d) > dev_best_hit10:
+            dev_best_hit10 = sum(Hit10_d) / len(Hit10_d)
+            best_hit10_epoch = epoch
+        if sum(Hit50_d) / len(Hit50_d) > dev_best_hit50:
+            dev_best_hit50 = sum(Hit50_d) / len(Hit50_d)
+            best_hit50_epoch = epoch
 
-# 记录验证集最好时，测试集的效果，以及相应的epoch
-best_hit1, best_hit3, best_hit10, best_hit50 = 0,0,0,0
-dev_best_hit1, dev_best_hit3, dev_best_hit10, dev_best_hit50 = 0,0,0,0
-best_hit1_epoch, best_hit3_epoch, best_hit10_epoch, best_hit50_epoch= 0,0,0,0
-best_epoch = 0
+        printlog('=' * 20)
+        printlog('Best result at hit1 epoch: {}'.format(best_hit1_epoch))
+        printlog('Best result at hit3 epoch: {}'.format(best_hit3_epoch))
+        printlog('Best result at hit10 epoch: {}'.format(best_hit10_epoch))
+        printlog('Best result at hit50 epoch: {}'.format(best_hit50_epoch))
+        printlog('Eval hit1: {}'.format(best_hit1))
+        printlog('Eval hit3: {}'.format(best_hit3))
+        printlog('Eval hit10: {}'.format(best_hit10))
+        printlog('Eval hit50: {}'.format(best_hit50))
 
-# 打印一些参数信息
-printlog('fold: {}'.format(args.fold))
-printlog('batch_size:{}'.format(args.batch_size))
-printlog('epoch_num: {}'.format(args.num_epoch))
-printlog('initial_t_lr: {}'.format(args.t_lr))
-printlog('seed: {}'.format(args.seed))
-printlog('wd: {}'.format(args.wd))
-printlog('len_arg: {}'.format(args.len_arg))
-printlog('len_temp: {}'.format(args.len_temp))
-printlog('Start training ...')
 
-# 所有数据的候选集
+def SeDGPL_main(args):
+    # ---------- network ----------
+    net = SeDGPL(args).to(device)
+    net.handler(to_add, tokenizer)
+    no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
+    optimizer_grouped_parameters = [
+        {'params': [p for n, p in net.named_parameters() if not any(nd in n for nd in no_decay)], 'weight_decay': args.wd},
+        {'params': [p for n, p in net.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
+    ]
+    optimizer = AdamW(params=optimizer_grouped_parameters, lr=args.t_lr)
+    # 采用交叉熵损失
+    cross_entropy = nn.CrossEntropyLoss().to(device)
 
-##################################  epoch  #################################
-for epoch in range(args.num_epoch):
-    print('=' * 20)
-    printlog('Epoch: {}'.format(epoch))
-    torch.cuda.empty_cache()
-    all_indices = torch.randperm(train_size).split(args.batch_size)
-    loss_epoch = 0.0
+    # 记录验证集最好时，测试集的效果，以及相应的epoch
+    best_hit1, best_hit3, best_hit10, best_hit50 = 0,0,0,0
+    dev_best_hit1, dev_best_hit3, dev_best_hit10, dev_best_hit50 = 0,0,0,0
+    best_hit1_epoch, best_hit3_epoch, best_hit10_epoch, best_hit50_epoch= 0,0,0,0
+    best_epoch = 0
 
-    Hit1, Hit3, Hit10, Hit50 = [], [], [], []
+    # 打印一些参数信息
+    printlog('fold: {}'.format(args.fold))
+    printlog('batch_size:{}'.format(args.batch_size))
+    printlog('epoch_num: {}'.format(args.num_epoch))
+    printlog('initial_t_lr: {}'.format(args.t_lr))
+    printlog('seed: {}'.format(args.seed))
+    printlog('wd: {}'.format(args.wd))
+    printlog('len_arg: {}'.format(args.len_arg))
+    printlog('len_temp: {}'.format(args.len_temp))
+    printlog('Start training ...')
 
-    all_Hit1, all_Hit3, all_Hit10, all_Hit50 = [], [], [], []
+    # 所有数据的候选集
 
-    start = time.time()
+    ##################################  epoch  #################################
+    for epoch in range(args.num_epoch):
+        print('=' * 20)
+        printlog('Epoch: {}'.format(epoch))
+        torch.cuda.empty_cache()
+        all_indices = torch.randperm(train_size).split(args.batch_size)
+        loss_epoch = 0.0
 
-    printlog('lr:{}'.format(optimizer.state_dict()['param_groups'][0]['lr']))
-    printlog('t_lr:{}'.format(optimizer.state_dict()['param_groups'][1]['lr']))
+        Hit1, Hit3, Hit10, Hit50 = [], [], [], []
 
-    ############################################################################
-    ##################################  train  #################################
-    ############################################################################
-    net.train()
-    progress = tqdm.tqdm(total=len(train_data) // args.batch_size + 1, ncols=75,
-                         desc='Train {}'.format(epoch))
-    total_step = len(train_data) // args.batch_size + 1
-    step = 0
-    for ii, batch_indices in enumerate(all_indices, 1):
-        mode = 'SimPrompt Learning'
-        progress.update(1)
-        # get a batch of wordvecs
-        batch_arg, mask_arg, batch_Type_arg, mask_Type_arg, event_tokenizer_pos, event_key_pos, mask_indices, sentences, labels, candiSet = get_batch_SeDGPL(train_data, args, batch_indices, tokenizer)
+        all_Hit1, all_Hit3, all_Hit10, all_Hit50 = [], [], [], []
 
-        candiLabels = [] +labels
-        for tt in range(len(labels)):
-            candiLabels[tt] = candiSet[tt].index(labels[tt])
-        batch_arg, mask_arg = batch_arg.to(device), mask_arg.to(device)
-        batch_Type_arg, mask_Type_arg = batch_Type_arg.to(device), mask_Type_arg.to(device)
-        mask_indices = mask_indices.to(device)
-        for sent in sentences:
-            for k in sent.keys():
-                sent[k]['input_ids'] = sent[k]['input_ids'].to(device)
-                sent[k]['attention_mask'] = sent[k]['attention_mask'].to(device)
-        length = len(batch_indices)
-        # fed data into network
-        prediction, SP_loss = net(mode, batch_arg, mask_arg, batch_Type_arg, mask_Type_arg, event_tokenizer_pos, event_key_pos, mask_indices, sentences, candiSet, candiLabels, length)
-        # answer_space：[23702,50265]
-        label = torch.LongTensor(labels).to(device)
-        # loss
-        loss = cross_entropy(prediction,label) + args.Sim_ratio * SP_loss
-        # optimize
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        step += 1
-        loss_epoch += loss.item()
-        _, hit1, hit3, hit10, hit20, hit50 = calculate(prediction, candiSet, labels, length)
-        Hit1 += hit1
-        Hit3 += hit3
-        Hit10 += hit10
-        Hit50 += hit50
+        start = time.time()
 
-        all_Hit1 += hit1
-        all_Hit3 += hit3
-        all_Hit10 += hit10
-        all_Hit50 += hit50
-        if ii % (100 // args.batch_size) == 0:
-            printlog('loss={:.4f} hit1={:.4f}, hit3={:.4f}, hit10={:.4f}, hit50={:.4f}'.format(
-                loss_epoch / (30 // args.batch_size),
-                sum(Hit1) / len(Hit1),
-                sum(Hit3) / len(Hit3),
-                sum(Hit10) / len(Hit10),
-                sum(Hit50) / len(Hit50)))
-            loss_epoch = 0.0
-            Hit1, Hit3, Hit10, Hit50 = [], [], [], []
-    end = time.time()
-    print('Training Time: {:.2f}s'.format(end - start))
+        printlog('lr:{}'.format(optimizer.state_dict()['param_groups'][0]['lr']))
+        printlog('t_lr:{}'.format(optimizer.state_dict()['param_groups'][1]['lr']))
 
-    progress.close()
+        ############################################################################
+        ##################################  train  #################################
+        ############################################################################
+        net.train()
+        progress = tqdm.tqdm(total=len(train_data) // args.batch_size + 1, ncols=75,
+                            desc='Train {}'.format(epoch))
+        total_step = len(train_data) // args.batch_size + 1
+        step = 0
+        for ii, batch_indices in enumerate(all_indices, 1):
+            mode = 'SimPrompt Learning'
+            progress.update(1)
+            # get a batch of wordvecs
+            batch_arg, mask_arg, batch_Type_arg, mask_Type_arg, event_tokenizer_pos, event_key_pos, mask_indices, sentences, labels, candiSet = get_batch_SeDGPL(train_data, args, batch_indices, tokenizer)
 
-    ############################################################################
-    ##################################  dev  ###################################
-    ############################################################################
-    all_indices = torch.range(0,dev_size-1,dtype=torch.int32).split(args.batch_size)
-    mode = 'Prompt Learning'
-    Hit1_d, Hit3_d, Hit10_d, Hit50_d = [], [], [], []
+            candiLabels = [] +labels
+            for tt in range(len(labels)):
+                candiLabels[tt] = candiSet[tt].index(labels[tt])
+            batch_arg, mask_arg = batch_arg.to(device), mask_arg.to(device)
+            batch_Type_arg, mask_Type_arg = batch_Type_arg.to(device), mask_Type_arg.to(device)
+            mask_indices = mask_indices.to(device)
+            for sent in sentences:
+                for k in sent.keys():
+                    sent[k]['input_ids'] = sent[k]['input_ids'].to(device)
+                    sent[k]['attention_mask'] = sent[k]['attention_mask'].to(device)
+            length = len(batch_indices)
+            # fed data into network
+            prediction, SP_loss = net(mode, batch_arg, mask_arg, batch_Type_arg, mask_Type_arg, event_tokenizer_pos, event_key_pos, mask_indices, sentences, candiSet, candiLabels, length)
+            # answer_space：[23702,50265]
+            label = torch.LongTensor(labels).to(device)
+            # loss
+            loss = cross_entropy(prediction,label) + args.Sim_ratio * SP_loss
+            # optimize
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            step += 1
+            loss_epoch += loss.item()
+            _, hit1, hit3, hit10, hit20, hit50 = calculate(prediction, candiSet, labels, length)
+            Hit1 += hit1
+            Hit3 += hit3
+            Hit10 += hit10
+            Hit50 += hit50
 
-    progress = tqdm.tqdm(total=len(dev_data) // args.batch_size + 1, ncols=75,
-                         desc='Eval {}'.format(epoch))
+            all_Hit1 += hit1
+            all_Hit3 += hit3
+            all_Hit10 += hit10
+            all_Hit50 += hit50
+            if ii % (100 // args.batch_size) == 0:
+                printlog('loss={:.4f} hit1={:.4f}, hit3={:.4f}, hit10={:.4f}, hit50={:.4f}'.format(
+                    loss_epoch / (30 // args.batch_size),
+                    sum(Hit1) / len(Hit1),
+                    sum(Hit3) / len(Hit3),
+                    sum(Hit10) / len(Hit10),
+                    sum(Hit50) / len(Hit50)))
+                loss_epoch = 0.0
+                Hit1, Hit3, Hit10, Hit50 = [], [], [], []
+        end = time.time()
+        print('Training Time: {:.2f}s'.format(end - start))
 
-    net.eval()
-    for batch_indices in all_indices:
-        progress.update(1)
+        progress.close()
 
-        # get a batch of dev_data
-        batch_arg, mask_arg, batch_Type_arg, mask_Type_arg, event_tokenizer_pos, event_key_pos, mask_indices, sentences, labels, candiSet = get_batch_SeDGPL(dev_data, args, batch_indices, tokenizer)
+        ############################################################################
+        ##################################  dev  ###################################
+        ############################################################################
+        all_indices = torch.range(0,dev_size-1,dtype=torch.int32).split(args.batch_size)
+        mode = 'Prompt Learning'
+        Hit1_d, Hit3_d, Hit10_d, Hit50_d = [], [], [], []
 
-        candiLabels = [] + labels
-        for tt in range(len(labels)):
-            candiLabels[tt] = candiSet[tt].index(labels[tt])
-        batch_arg, mask_arg = batch_arg.to(device), mask_arg.to(device)
-        batch_Type_arg, mask_Type_arg = batch_Type_arg.to(device), mask_Type_arg.to(device)
-        mask_indices = mask_indices.to(device)
-        for sent in sentences:
-            for k in sent.keys():
-                sent[k]['input_ids'] = sent[k]['input_ids'].to(device)
-                sent[k]['attention_mask'] = sent[k]['attention_mask'].to(device)
-        length = len(batch_indices)
-        # fed data into network
-        prediction = net(mode, batch_arg, mask_arg, batch_Type_arg, mask_Type_arg, event_tokenizer_pos, event_key_pos, mask_indices, sentences, candiSet, candiLabels, length)
+        progress = tqdm.tqdm(total=len(dev_data) // args.batch_size + 1, ncols=75,
+                            desc='Eval {}'.format(epoch))
 
-        _, hit1, hit3, hit10, hit20, hit50 = calculate(prediction, candiSet, labels, length)
-        Hit1_d += hit1
-        Hit3_d += hit3
-        Hit10_d += hit10
-        Hit50_d += hit50
+        net.eval()
+        for batch_indices in all_indices:
+            progress.update(1)
 
-    progress.close()
+            # get a batch of dev_data
+            batch_arg, mask_arg, batch_Type_arg, mask_Type_arg, event_tokenizer_pos, event_key_pos, mask_indices, sentences, labels, candiSet = get_batch_SeDGPL(dev_data, args, batch_indices, tokenizer)
 
-    ############################################################################
-    ##################################  test  ##################################
-    ############################################################################
-    # ------------------------------------------------------
-    # -------------- 这里不要随机！！！！！！！！！ --------------
-    # -----由于测试集的label没有给出，因此运行到253行时会报错-------
-    # ---你们需要在验证集最优时，保存好该epoch的测试集的预测结果-----
-    # ----因此这一部分的代码需要做调整：保存每个epoch的测试集的预测结果-----
-    # ----然后将验证集最优的那个epoch，测试集的预测结果文件提交即可-----
-    # ----保存的内容为每条数据候选集事件的预测排名，保存形式见data.json----
-    # ------------------------------------------------------
-    all_indices = torch.arange(1, test_size).split(args.batch_size)
+            candiLabels = [] + labels
+            for tt in range(len(labels)):
+                candiLabels[tt] = candiSet[tt].index(labels[tt])
+            batch_arg, mask_arg = batch_arg.to(device), mask_arg.to(device)
+            batch_Type_arg, mask_Type_arg = batch_Type_arg.to(device), mask_Type_arg.to(device)
+            mask_indices = mask_indices.to(device)
+            for sent in sentences:
+                for k in sent.keys():
+                    sent[k]['input_ids'] = sent[k]['input_ids'].to(device)
+                    sent[k]['attention_mask'] = sent[k]['attention_mask'].to(device)
+            length = len(batch_indices)
+            # fed data into network
+            prediction = net(mode, batch_arg, mask_arg, batch_Type_arg, mask_Type_arg, event_tokenizer_pos, event_key_pos, mask_indices, sentences, candiSet, candiLabels, length)
 
-    # 用于保存每个 epoch 的测试集预测结果
-    all_dict = {}
+            _, hit1, hit3, hit10, hit20, hit50 = calculate(prediction, candiSet, labels, length)
+            Hit1_d += hit1
+            Hit3_d += hit3
+            Hit10_d += hit10
+            Hit50_d += hit50
 
-    progress = tqdm.tqdm(total=len(test_data) // args.batch_size + 1, ncols=75,
-                         desc='Eval {}'.format(epoch))
+        progress.close()
 
-    net.eval()
-    for batch_indices in all_indices:
-        progress.update(1)
+        ############################################################################
+        ##################################  test  ##################################
+        ############################################################################
+        # ------------------------------------------------------
+        # -------------- 这里不要随机！！！！！！！！！ --------------
+        # -----由于测试集的label没有给出，因此运行到253行时会报错-------
+        # ---你们需要在验证集最优时，保存好该epoch的测试集的预测结果-----
+        # ----因此这一部分的代码需要做调整：保存每个epoch的测试集的预测结果-----
+        # ----然后将验证集最优的那个epoch，测试集的预测结果文件提交即可-----
+        # ----保存的内容为每条数据候选集事件的预测排名，保存形式见data.json----
+        # ------------------------------------------------------
+        all_indices = torch.arange(1, test_size).split(args.batch_size)
 
-        # get a batch of dev_data
-        batch_arg, mask_arg, batch_Type_arg, mask_Type_arg, event_tokenizer_pos, event_key_pos, mask_indices, sentences, candiSet = get_batch_SeDGPL(dev_data, args, batch_indices, tokenizer, with_label=False)
+        # 用于保存每个 epoch 的测试集预测结果
+        all_dict = {}
 
-        candiLabels = [] + labels
-        for tt in range(len(labels)):
-            candiLabels[tt] = candiSet[tt].index(labels[tt])
-        batch_arg, mask_arg = batch_arg.to(device), mask_arg.to(device)
-        batch_Type_arg, mask_Type_arg = batch_Type_arg.to(device), mask_Type_arg.to(device)
-        mask_indices = mask_indices.to(device)
-        for sent in sentences:
-            for k in sent.keys():
-                sent[k]['input_ids'] = sent[k]['input_ids'].to(device)
-                sent[k]['attention_mask'] = sent[k]['attention_mask'].to(device)
-        length = len(batch_indices)
-        # fed data into network
-        prediction = net(mode, batch_arg, mask_arg, batch_Type_arg, mask_Type_arg, event_tokenizer_pos, event_key_pos, mask_indices, sentences, candiSet, candiLabels, length)
-        
-        # 保存每条数据的预测结果
-        # 对于当前 batch_indices 内的第 idx 条样本
-        for idx in range(length):
-            # 表示对当前样本来说，所有的此样本候选事件的发生概率
-            predtCandi = prediction[idx][candiSet[idx]].tolist()
-            # 获取每个候选事件的排名
-            ranked_indices = torch.argsort(torch.tensor(predtCandi), descending=True).tolist()
+        progress = tqdm.tqdm(total=len(test_data) // args.batch_size + 1, ncols=75,
+                            desc='Eval {}'.format(epoch))
+
+        net.eval()
+        for batch_indices in all_indices:
+            progress.update(1)
+
+            # get a batch of dev_data
+            batch_arg, mask_arg, batch_Type_arg, mask_Type_arg, event_tokenizer_pos, event_key_pos, mask_indices, sentences, candiSet = get_batch_SeDGPL(dev_data, args, batch_indices, tokenizer, with_label=False)
+
+            candiLabels = [] + labels
+            for tt in range(len(labels)):
+                candiLabels[tt] = candiSet[tt].index(labels[tt])
+            batch_arg, mask_arg = batch_arg.to(device), mask_arg.to(device)
+            batch_Type_arg, mask_Type_arg = batch_Type_arg.to(device), mask_Type_arg.to(device)
+            mask_indices = mask_indices.to(device)
+            for sent in sentences:
+                for k in sent.keys():
+                    sent[k]['input_ids'] = sent[k]['input_ids'].to(device)
+                    sent[k]['attention_mask'] = sent[k]['attention_mask'].to(device)
+            length = len(batch_indices)
+            # fed data into network
+            prediction = net(mode, batch_arg, mask_arg, batch_Type_arg, mask_Type_arg, event_tokenizer_pos, event_key_pos, mask_indices, sentences, candiSet, candiLabels, length)
             
-            # 创建字典，键为 candiSet[idx] 的元素，值为对应的排名
-            ranking_dict = {candiSet[idx][i]: ranked_indices.index(i) + 1 for i in range(len(candiSet[idx]))}
+            # 保存每条数据的预测结果
+            # 对于当前 batch_indices 内的第 idx 条样本
+            for idx in range(length):
+                # 表示对当前样本来说，所有的此样本候选事件的发生概率
+                predtCandi = prediction[idx][candiSet[idx]].tolist()
+                # 获取每个候选事件的排名
+                ranked_indices = torch.argsort(torch.tensor(predtCandi), descending=True).tolist()
+                
+                # 创建字典，键为 candiSet[idx] 的元素，值为对应的排名
+                ranking_dict = {candiSet[idx][i]: ranked_indices.index(i) + 1 for i in range(len(candiSet[idx]))}
 
-        # 将 ranking_dict 添加到 all_dict 中，使用 batch_indices[idx] 作为键
-        all_dict[batch_indices.item()] = ranking_dict
+            # 将 ranking_dict 添加到 all_dict 中，使用 batch_indices[idx] 作为键
+            all_dict[batch_indices.item()] = ranking_dict
 
-    progress.close()
+        progress.close()
 
-    # 保存每个 epoch 的测试集预测结果到 data.json
-    with open('output/data.json', 'w') as f:
-        json.dump(all_dict, f)
-        print("Test predictions saved to data.json")
+        # 保存每个 epoch 的测试集预测结果到 data.json
+        with open('output/data.json', 'w') as f:
+            json.dump(all_dict, f)
+            print("Test predictions saved to data.json")
 
-    ############################################################################
-    ##################################  result  ##################################
-    ############################################################################
-    ######### Train Results Print #########
-    printlog('-------------------')
-    printlog("TIME: {}".format(time.time() - start))
-    printlog('EPOCH : {}'.format(epoch))
-    printlog("TRAIN:")
-    printlog('loss={:.4f} hit1={:.4f}, hit3={:.4f}, hit10={:.4f}, hit50={:.4f}'.format(
-        loss_epoch / (30 // args.batch_size),
-        sum(all_Hit1) / len(all_Hit1),
-        sum(all_Hit3) / len(all_Hit3),
-        sum(all_Hit10) / len(all_Hit10),
-        sum(all_Hit50) / len(all_Hit50)))
+        ############################################################################
+        ##################################  result  ##################################
+        ############################################################################
+        ######### Train Results Print #########
+        printlog('-------------------')
+        printlog("TIME: {}".format(time.time() - start))
+        printlog('EPOCH : {}'.format(epoch))
+        printlog("TRAIN:")
+        printlog('loss={:.4f} hit1={:.4f}, hit3={:.4f}, hit10={:.4f}, hit50={:.4f}'.format(
+            loss_epoch / (30 // args.batch_size),
+            sum(all_Hit1) / len(all_Hit1),
+            sum(all_Hit3) / len(all_Hit3),
+            sum(all_Hit10) / len(all_Hit10),
+            sum(all_Hit50) / len(all_Hit50)))
 
-    ######### Dev Results Print #########
-    printlog("DEV:")
-    printlog('loss={:.4f} hit1={:.4f}, hit3={:.4f}, hit10={:.4f}, hit50={:.4f}'.format(
-        loss_epoch / (30 // args.batch_size),
-        sum(Hit1_d) / len(Hit1_d),
-        sum(Hit3_d) / len(Hit3_d),
-        sum(Hit10_d) / len(Hit10_d),
-        sum(Hit50_d) / len(Hit50_d)))
-
-
-    # record the best result
-    if sum(Hit1_d) / len(Hit1_d) > dev_best_hit1:
-        dev_best_hit1 = sum(Hit1_d) / len(Hit1_d)
-        best_hit1_epoch = epoch
-    if sum(Hit3_d) / len(Hit3_d) > dev_best_hit3:
-        dev_best_hit3 = sum(Hit3_d) / len(Hit3_d)
-        best_hit3_epoch = epoch
-    if sum(Hit10_d) / len(Hit10_d) > dev_best_hit10:
-        dev_best_hit10 = sum(Hit10_d) / len(Hit10_d)
-        best_hit10_epoch = epoch
-    if sum(Hit50_d) / len(Hit50_d) > dev_best_hit50:
-        dev_best_hit50 = sum(Hit50_d) / len(Hit50_d)
-        best_hit50_epoch = epoch
-
-    printlog('=' * 20)
-    printlog('Best result at hit1 epoch: {}'.format(best_hit1_epoch))
-    printlog('Best result at hit3 epoch: {}'.format(best_hit3_epoch))
-    printlog('Best result at hit10 epoch: {}'.format(best_hit10_epoch))
-    printlog('Best result at hit50 epoch: {}'.format(best_hit50_epoch))
-    printlog('Eval hit1: {}'.format(best_hit1))
-    printlog('Eval hit3: {}'.format(best_hit3))
-    printlog('Eval hit10: {}'.format(best_hit10))
-    printlog('Eval hit50: {}'.format(best_hit50))
+        ######### Dev Results Print #########
+        printlog("DEV:")
+        printlog('loss={:.4f} hit1={:.4f}, hit3={:.4f}, hit10={:.4f}, hit50={:.4f}'.format(
+            loss_epoch / (30 // args.batch_size),
+            sum(Hit1_d) / len(Hit1_d),
+            sum(Hit3_d) / len(Hit3_d),
+            sum(Hit10_d) / len(Hit10_d),
+            sum(Hit50_d) / len(Hit50_d)))
 
 
+        # record the best result
+        if sum(Hit1_d) / len(Hit1_d) > dev_best_hit1:
+            dev_best_hit1 = sum(Hit1_d) / len(Hit1_d)
+            best_hit1_epoch = epoch
+        if sum(Hit3_d) / len(Hit3_d) > dev_best_hit3:
+            dev_best_hit3 = sum(Hit3_d) / len(Hit3_d)
+            best_hit3_epoch = epoch
+        if sum(Hit10_d) / len(Hit10_d) > dev_best_hit10:
+            dev_best_hit10 = sum(Hit10_d) / len(Hit10_d)
+            best_hit10_epoch = epoch
+        if sum(Hit50_d) / len(Hit50_d) > dev_best_hit50:
+            dev_best_hit50 = sum(Hit50_d) / len(Hit50_d)
+            best_hit50_epoch = epoch
+
+        printlog('=' * 20)
+        printlog('Best result at hit1 epoch: {}'.format(best_hit1_epoch))
+        printlog('Best result at hit3 epoch: {}'.format(best_hit3_epoch))
+        printlog('Best result at hit10 epoch: {}'.format(best_hit10_epoch))
+        printlog('Best result at hit50 epoch: {}'.format(best_hit50_epoch))
+        printlog('Eval hit1: {}'.format(best_hit1))
+        printlog('Eval hit3: {}'.format(best_hit3))
+        printlog('Eval hit10: {}'.format(best_hit10))
+        printlog('Eval hit50: {}'.format(best_hit50))
 
 
-# torch.save(state, args.model)
+MLP_main(args)
