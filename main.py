@@ -443,6 +443,9 @@ def SeDGPL_main(args):
         ############################################################################
         ##################################  dev  ###################################
         ############################################################################
+
+        torch.cuda.empty_cache()
+
         all_indices = torch.range(0,dev_size-1,dtype=torch.int32).split(args.batch_size)
         mode = 'Prompt Learning'
         Hit1_d, Hit3_d, Hit10_d, Hit50_d = [], [], [], []
@@ -451,31 +454,32 @@ def SeDGPL_main(args):
                             desc='Eval {}'.format(epoch))
 
         net.eval()
-        for batch_indices in all_indices:
-            progress.update(1)
+        with torch.no_grad():
+            for batch_indices in all_indices:
+                progress.update(1)
 
-            # get a batch of dev_data
-            batch_arg, mask_arg, batch_Type_arg, mask_Type_arg, event_tokenizer_pos, event_key_pos, mask_indices, sentences, labels, candiSet = get_batch_SeDGPL(dev_data, args, batch_indices, tokenizer)
+                # get a batch of dev_data
+                batch_arg, mask_arg, batch_Type_arg, mask_Type_arg, event_tokenizer_pos, event_key_pos, mask_indices, sentences, labels, candiSet = get_batch_SeDGPL(dev_data, args, batch_indices, tokenizer)
 
-            candiLabels = [] + labels
-            for tt in range(len(labels)):
-                candiLabels[tt] = candiSet[tt].index(labels[tt])
-            batch_arg, mask_arg = batch_arg.to(device), mask_arg.to(device)
-            # batch_Type_arg, mask_Type_arg = batch_Type_arg.to(device), mask_Type_arg.to(device)
-            mask_indices = mask_indices.to(device)
-            for sent in sentences:
-                for k in sent.keys():
-                    sent[k]['input_ids'] = sent[k]['input_ids'].to(device)
-                    sent[k]['attention_mask'] = sent[k]['attention_mask'].to(device)
-            length = len(batch_indices)
-            # fed data into network
-            prediction = net(mode, batch_arg, mask_arg, batch_Type_arg, mask_Type_arg, event_tokenizer_pos, event_key_pos, mask_indices, sentences, candiSet, candiLabels, length)
+                candiLabels = [] + labels
+                for tt in range(len(labels)):
+                    candiLabels[tt] = candiSet[tt].index(labels[tt])
+                batch_arg, mask_arg = batch_arg.to(device), mask_arg.to(device)
+                # batch_Type_arg, mask_Type_arg = batch_Type_arg.to(device), mask_Type_arg.to(device)
+                mask_indices = mask_indices.to(device)
+                for sent in sentences:
+                    for k in sent.keys():
+                        sent[k]['input_ids'] = sent[k]['input_ids'].to(device)
+                        sent[k]['attention_mask'] = sent[k]['attention_mask'].to(device)
+                length = len(batch_indices)
+                # fed data into network
+                prediction = net(mode, batch_arg, mask_arg, batch_Type_arg, mask_Type_arg, event_tokenizer_pos, event_key_pos, mask_indices, sentences, candiSet, candiLabels, length)
 
-            hit1, hit3, hit10, hit50 = calculate(prediction, candiSet, labels, length)
-            Hit1_d += hit1
-            Hit3_d += hit3
-            Hit10_d += hit10
-            Hit50_d += hit50
+                hit1, hit3, hit10, hit50 = calculate(prediction, candiSet, labels, length)
+                Hit1_d += hit1
+                Hit3_d += hit3
+                Hit10_d += hit10
+                Hit50_d += hit50
 
         progress.close()
 
