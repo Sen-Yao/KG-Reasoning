@@ -332,6 +332,7 @@ def MLP_main(args):
 
 def SeDGPL_main(args):
     # ---------- network ----------
+    # sentence_map = get_sentence_map(test_data)
     net = SeDGPL(args).to(device)
     net.handler(to_add, tokenizer)
     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
@@ -500,7 +501,7 @@ def SeDGPL_main(args):
         all_dict = {}
 
         progress = tqdm.tqdm(total=len(test_data) // args.batch_size + 1, ncols=75,
-                            desc='Eval {}'.format(epoch))
+                            desc='Test {}'.format(epoch))
 
         net.eval()
         for batch_indices in all_indices:
@@ -524,13 +525,17 @@ def SeDGPL_main(args):
             # 保存每条数据的预测结果
             # 对于当前 batch_indices 内的第 idx 条样本
             for idx in range(length):
-                # 表示对当前样本来说，所有的此样本候选事件的发生概率
+                # candiSet[idx] 是当前样本的所有候选事件，为五位数字的一维张量
+                # predtCandi 表示对当前样本来说，所有的此样本候选事件对应的的发生概率
                 predtCandi = prediction[idx][candiSet[idx]].tolist()
                 # 获取每个候选事件的排名
                 ranked_indices = torch.argsort(torch.tensor(predtCandi), descending=True).tolist()
                 
-                # 创建字典，键为 candiSet[idx] 的元素，值为对应的排名
-                ranking_dict = {candiSet[idx][i]: ranked_indices.index(i) + 1 for i in range(len(candiSet[idx]))}
+                # 创建字典，键为事件单词的元素，值为对应的排名
+                # test_data[idx]['candiSet'][i] 中的数据为 str，即编码前的形如 <a_4> 的事件
+                # 利用 event_dict 可以得到其对应的自然语言事件为 event_dict[test_data[idx]['candiSet'][i]]
+                # 需要找到从五万多的那个数字，映射到原本事件的方式
+                ranking_dict = {event_dict[test_data[idx]['candiSet'][i]]: ranked_indices.index(i) + 1 for i in range(len(candiSet[idx]))}
 
             # 将 ranking_dict 添加到 all_dict 中，使用 batch_indices[idx] 作为键
             all_dict[batch_indices.item()] = ranking_dict
